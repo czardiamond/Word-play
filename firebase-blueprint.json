@@ -1,0 +1,235 @@
+{
+  "entities": {
+    "user_profile": {
+      "title": "User Profile",
+      "description": "Authenticated user profile and aggregated game stats",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 64 },
+        "email": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 512 },
+        "isAnonymous": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "lastLoginAt": { "type": "number" },
+        "totalMatches": { "type": "number" },
+        "totalWins": { "type": "number" },
+        "totalLosses": { "type": "number" },
+        "totalDraws": { "type": "number" },
+        "totalScore": { "type": "number" },
+        "highestScore": { "type": "number" },
+        "avgAccuracy": { "type": "number" },
+        "rating": { "type": "number" },
+        "peakRating": { "type": "number" },
+        "title": { "type": "string", "maxLength": 64 },
+        "streakDays": { "type": "number" },
+        "totalXp": { "type": "number" },
+        "gems": { "type": "number" },
+        "league": { "type": "string", "maxLength": 64 },
+        "selectedAvatar": { "type": "string", "maxLength": 32 },
+        "selectedInk": { "type": "string", "maxLength": 64 },
+        "selectedTitle": { "type": "string", "maxLength": 64 },
+        "unlockedItems": { "type": "array" }
+      },
+      "required": ["uid", "displayName"]
+    },
+    "match_history": {
+      "title": "Match History",
+      "description": "Individual game match log for user history tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "number" },
+        "formattedDate": { "type": "string", "maxLength": 64 },
+        "score": { "type": "number" },
+        "rank": { "type": "number" },
+        "isWinner": { "type": "boolean" },
+        "lettersPlayed": { "type": "array" },
+        "roundsCount": { "type": "number" },
+        "categoriesCount": { "type": "number" },
+        "opponentCount": { "type": "number" },
+        "gameMode": { "type": "string", "enum": ["singleplayer", "multiplayer"] },
+        "eloDelta": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "summary": { "type": "string", "maxLength": 256 }
+      },
+      "required": ["userId", "score", "timestamp"]
+    },
+    "room": {
+      "title": "Room",
+      "description": "Multiplayer game room document",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 16 },
+        "hostId": { "type": "string", "maxLength": 128 },
+        "hostName": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["waiting", "in_progress", "finished"] },
+        "isPublic": { "type": "boolean" },
+        "maxPlayers": { "type": "number" },
+        "categories": { "type": "array" },
+        "roundTimeLimit": { "type": "number" },
+        "currentRoundIndex": { "type": "number" },
+        "currentLetter": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["code", "hostId", "hostName", "status", "isPublic", "maxPlayers", "roundTimeLimit"]
+    },
+    "room_player": {
+      "title": "Room Player",
+      "description": "Player in multiplayer room subcollection",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 64 },
+        "avatar": { "type": "string", "maxLength": 32 },
+        "isHost": { "type": "boolean" },
+        "connected": { "type": "boolean" },
+        "joinedAt": { "type": "string" },
+        "lastSeen": { "type": "string" }
+      },
+      "required": ["id", "name", "isHost", "connected"]
+    },
+    "round_submission": {
+      "title": "Round Submission",
+      "description": "Player answers submission for a specific round",
+      "type": "object",
+      "properties": {
+        "playerId": { "type": "string", "maxLength": 128 },
+        "answers": { "type": "object" },
+        "timeTaken": { "type": "number" },
+        "submittedAt": { "type": "string" }
+      },
+      "required": ["playerId", "answers"]
+    },
+    "high_scores": {
+      "title": "High Scores",
+      "description": "Hall of Fame records for classroom game matches",
+      "type": "object",
+      "properties": {
+        "playerName": { "type": "string", "maxLength": 64 },
+        "avatar": { "type": "string", "maxLength": 32 },
+        "score": { "type": "number" },
+        "date": { "type": "string", "maxLength": 32 },
+        "roundsPlayed": { "type": "number" },
+        "categoriesCount": { "type": "number" },
+        "isBot": { "type": "boolean" },
+        "isWinner": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["playerName", "score"]
+    },
+    "user_ratings": {
+      "title": "User Ratings",
+      "description": "Chess-style user rating profile",
+      "type": "object",
+      "properties": {
+        "rating": { "type": "number" },
+        "peakRating": { "type": "number" },
+        "wins": { "type": "number" },
+        "losses": { "type": "number" },
+        "draws": { "type": "number" },
+        "totalMatches": { "type": "number" },
+        "avgAccuracy": { "type": "number" },
+        "title": { "type": "string", "maxLength": 32 },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["rating", "wins", "losses"]
+    },
+    "duolingo_profiles": {
+      "title": "Duolingo Profile",
+      "description": "Cloud streak, XP, gems, and daily quests for user",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 64 },
+        "avatar": { "type": "string", "maxLength": 32 },
+        "streakDays": { "type": "number" },
+        "lastPracticeDate": { "type": "string", "maxLength": 32 },
+        "totalXp": { "type": "number" },
+        "todayXp": { "type": "number" },
+        "gems": { "type": "number" },
+        "league": { "type": "string", "maxLength": 64 },
+        "quests": { "type": "array" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "totalXp", "streakDays"]
+    },
+    "league_member": {
+      "title": "League Member",
+      "description": "User standing in a specific league",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 64 },
+        "avatar": { "type": "string", "maxLength": 32 },
+        "league": { "type": "string", "maxLength": 64 },
+        "totalXp": { "type": "number" },
+        "weeklyXp": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "displayName", "totalXp"]
+    },
+    "online_room": {
+      "title": "Online Room",
+      "description": "Multiplayer lobby and active match room",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 16 },
+        "hostName": { "type": "string", "maxLength": 64 },
+        "players": { "type": "array" },
+        "isPublic": { "type": "boolean" },
+        "maxPlayers": { "type": "number" },
+        "status": { "type": "string", "enum": ["waiting", "in_progress", "finished"] },
+        "timeLimit": { "type": "number" },
+        "currentLetter": { "type": "string" },
+        "currentRoundIndex": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["code", "hostName", "players", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "user_profile" },
+      "description": "User profiles with Google account info and aggregated stats"
+    },
+    "/users/{userId}/matches/{matchId}": {
+      "schema": { "$ref": "match_history" },
+      "description": "Detailed match history logs for each user"
+    },
+    "/online_rooms/{roomId}": {
+      "schema": { "$ref": "online_room" },
+      "description": "Live multiplayer lobby and game rooms"
+    },
+    "/rooms/{roomCode}": {
+      "schema": { "$ref": "room" },
+      "description": "Real-time multiplayer game room state"
+    },
+    "/rooms/{roomCode}/players/{uid}": {
+      "schema": { "$ref": "room_player" },
+      "description": "Players present in a room"
+    },
+    "/rooms/{roomCode}/rounds/{roundId}/submissions/{uid}": {
+      "schema": { "$ref": "round_submission" },
+      "description": "Immutable round submissions from each player"
+    },
+    "/high_scores/{scoreId}": {
+      "schema": { "$ref": "high_scores" },
+      "description": "High score leaderboard archives"
+    },
+    "/user_ratings/{userId}": {
+      "schema": { "$ref": "user_ratings" },
+      "description": "Cloud Elo ratings for authenticated users"
+    },
+    "/duolingo_profiles/{uid}": {
+      "schema": { "$ref": "duolingo_profiles" },
+      "description": "Cloud streak, XP, gems, and daily quests for user"
+    },
+    "/duolingo_leagues/{leagueName}/members/{uid}": {
+      "schema": { "$ref": "league_member" },
+      "description": "Real league members and live leaderboard standings"
+    }
+  }
+}

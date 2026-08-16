@@ -1,0 +1,6 @@
+{
+  "name": "Name, Animal, Food, Place, Thing",
+  "description": "A multiplayer digital adaptation of the classic childhood word game Name, Animal, Food, Place, Thing with simulated AI players and Gemini-powered automated validation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

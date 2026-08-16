@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions for auth verification
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connectivity test doc
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // User profiles & aggregated statistics
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if isOwner(userId);
+      allow delete: if false;
+
+      // User match history subcollection
+      match /matches/{matchId} {
+        allow read: if isAuthenticated() && (request.auth.uid == userId || isOwner(userId));
+        allow create, update: if isOwner(userId);
+        allow delete: if false;
+      }
+    }
+
+    // High scores archives & player score records
+    match /high_scores/{scoreId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if false;
+    }
+
+    // User ratings / Elo ratings
+    match /user_ratings/{userId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if false;
+    }
+
+    // Duolingo-style Educational Cloud Profiles
+    match /duolingo_profiles/{userId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if false;
+    }
+
+    // Duolingo League Standings & Leaderboard
+    match /duolingo_leagues/{leagueName}/members/{userId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if false;
+    }
+
+    // Online Multiplayer Game Rooms & Lobbies
+    match /online_rooms/{roomId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated();
+    }
+
+    // Real-Time Multiplayer Rooms (Alternative schema)
+    match /rooms/{code} {
+      allow read: if true;
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated();
+
+      // Room players subcollection
+      match /players/{uid} {
+        allow read: if true;
+        allow create, update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+
+      // Round answers submissions subcollection
+      match /rounds/{roundId}/submissions/{uid} {
+        allow read: if true;
+        allow create, update: if isAuthenticated();
+        allow delete: if false;
+      }
+    }
+  }
+}
