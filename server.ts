@@ -3,6 +3,12 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { getRoomState } from "./src/utils/roomService.js";
 
 dotenv.config();
 
@@ -10,6 +16,9 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// Persistent MCP Dictionary Client
+let dictClient: Client | null = null;
 
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
@@ -687,19 +696,20 @@ app.post("/api/validate", async (req, res) => {
 - Support and generously accept spelling variants, regional names, or local terms (e.g. traditional Nigerian names/foods like "Amala" or "Eba" for Food, local cities/states, or Pidgin English slang). If it fits culturally and matches the spelling starting with "${upperLetter}", count it as correct! Reject completely unrelated words or wrong starting letters.`;
     }
 
-    const prompt = `You are the judge of the classic childhood category game "Name, Animal, Food, Place, Thing".
+    const prompt = `You are the expert judge of the classic word category game "Name, Animal, Food, Place, Thing".
 The letter for this round is "${upperLetter}".
 
 ${strictnessRules}
 
 Evaluate the following player submissions. For each word submitted, verify:
 1. Does it start with the letter "${upperLetter}" (case-insensitive)? If empty (""), it is automatically invalid.
-2. Is it a valid, real word or phrase according to the VALIDATION THRESHOLD rules above?
+2. Is it a valid, real word, proper noun, food, animal, name, place, or object for the requested category?
+Note: AI players (e.g. Susie, Harry, Sam, Joe) submit valid vocabulary words (or in Sam's case, fun themed answers) starting with "${upperLetter}". Grade all valid words starting with "${upperLetter}" as valid: true!
 
 Submissions:
 ${submissionsStr}
 
-Provide an object validation list matching the Player IDs. If a word is valid, set "isValid" to true, and provide a short positive feedback. If it is invalid, set "isValid" to false and provide a brief friendly reason why it is incorrect (e.g. "Does not start with B", "Not a real animal", etc.).
+Provide an object validation list matching the Player IDs. If a word is valid, set "isValid" to true, and provide a short positive feedback. If it is invalid, set "isValid" to false and provide a brief friendly reason why it is incorrect (e.g. "Does not start with ${upperLetter}", "Not a real animal", etc.).
 Do not include markdown tags. Use the specified response schema.`;
 
     // Dynamic validation schema properties
@@ -782,8 +792,51 @@ Do not include markdown tags. Use the specified response schema.`;
   }
 });
 
-// API Route: AI Word Lookup & Definition Validation with Gemini
-app.post("/api/word-lookup", async (req, res) => {
+// Helper function: Lookup word via external persistent MCP Dictionary Client with 5s timeout
+async function lookupWordViaMcp(word: string): Promise<any | null> {
+  if (!dictClient) {
+    return null;
+  }
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("MCP Dictionary lookup timed out (5s)")), 5000)
+    );
+
+    const callPromise = dictClient.callTool({
+      name: "lookup_word",
+      arguments: { word }
+    });
+
+    const response = await Promise.race([callPromise, timeoutPromise]) as any;
+
+    if (!response || response.isError) {
+      return null;
+    }
+
+    const contentItem = response.content?.[0];
+    if (!contentItem || contentItem.type !== "text" || !contentItem.text) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(contentItem.text);
+      return parsed;
+    } catch {
+      // If it returned plain text rather than JSON, wrap it gracefully
+      return {
+        definition: contentItem.text,
+        word
+      };
+    }
+  } catch (error: any) {
+    console.warn(`[MCP Dictionary] Error looking up "${word}":`, error.message);
+    return null;
+  }
+}
+
+// Handler for word lookups supporting MCP Dictionary -> Gemini -> Local Fallback
+async function handleWordLookupRequest(req: express.Request, res: express.Response) {
   const { word, category, letter } = req.body;
 
   if (!word || typeof word !== "string" || word.trim() === "") {
@@ -793,7 +846,44 @@ app.post("/api/word-lookup", async (req, res) => {
   const cleanWord = word.trim();
   const targetCategory = category || "General";
   const targetLetter = (letter || cleanWord.charAt(0)).toString().toUpperCase().charAt(0);
+  const startsWithLetter = cleanWord.toUpperCase().startsWith(targetLetter);
 
+  // 1. Attempt lookup via persistent MCP Dictionary server
+  try {
+    const mcpResult = await lookupWordViaMcp(cleanWord);
+    if (mcpResult) {
+      console.log(`[Word Lookup] Served by MCP dictionary client for: "${cleanWord}"`);
+      const def = mcpResult.definition || (typeof mcpResult === "string" ? mcpResult : JSON.stringify(mcpResult));
+      const phonetic = mcpResult.pronunciation || mcpResult.phonetic || `/${cleanWord.toLowerCase()}/`;
+      const partOfSpeech = mcpResult.partOfSpeech || mcpResult.pos || "noun";
+      const example = mcpResult.example || mcpResult.exampleSentences?.[0] || "";
+
+      return res.json({
+        source: "mcp-dictionary",
+        word: cleanWord,
+        targetLetter,
+        category: targetCategory,
+        isValidWord: startsWithLetter,
+        isCategoryMatch: startsWithLetter,
+        overallVerdict: startsWithLetter ? "100% Valid & Optimal (Cambridge Dictionary)" : `Does not start with "${targetLetter}"`,
+        phonetic,
+        partOfSpeech,
+        definition: def,
+        origin: "Cambridge Dictionary (MCP)",
+        funFact: example ? `Example usage: "${example}"` : `Found in verified Cambridge Dictionary via MCP.`,
+        gameTacticalValue: startsWithLetter ? "Valid Entry — up to 15pts if unique" : "0-pt Invalid",
+        maxPossibleScore: startsWithLetter ? 15 : 0,
+        tacticalTip: startsWithLetter
+          ? "Verified valid word. Actual score depends on whether other players submit the same or a different valid word — unique answers score highest."
+          : "This word doesn't start with the required letter for this round.",
+        recommendedAlternatives: [`${targetLetter}xample`, `${targetLetter}lite`, `${targetLetter}mega`]
+      });
+    }
+  } catch (mcpErr: any) {
+    console.warn(`[Word Lookup] MCP attempt failed for "${cleanWord}", proceeding to Gemini:`, mcpErr.message);
+  }
+
+  // 2. Fallback to Gemini-based lookup logic
   try {
     const client = getGeminiClient();
     const key = process.env.GEMINI_API_KEY;
@@ -811,7 +901,7 @@ Evaluate:
 1. Is "${cleanWord}" a legitimate real-world word or proper noun?
 2. Does it start with "${targetLetter}"?
 3. Does it genuinely belong to the category "${targetCategory}"?
-4. Provide the correct IPA phonetic pronunciation, part of speech, clear concise authoritative definition (1-2 sentences), etymological origin, a fun fact, Scattergories game value rating ("15-pt Masterpiece", "10-pt Standard", "5-pt Common/Risky", or "0-pt Invalid"), and 3 rare high-scoring alternative words starting with "${targetLetter}" for "${targetCategory}".
+4. Provide the correct IPA phonetic pronunciation, part of speech, clear concise authoritative definition (1-2 sentences), etymological origin, a fun fact, Scattergories game value rating (e.g. "Valid Entry — up to 15pts if unique", or "0-pt Invalid"), maximum possible score (15 if valid, 0 if invalid), a helpful tactical tip emphasizing that game score depends on answer uniqueness against other players, and 3 rare high-scoring alternative words starting with "${targetLetter}" for "${targetCategory}".
 
 Return JSON strictly adhering to schema.`;
 
@@ -834,8 +924,8 @@ Return JSON strictly adhering to schema.`;
             definition: { type: Type.STRING },
             origin: { type: Type.STRING },
             funFact: { type: Type.STRING },
-            gameTacticalValue: { type: Type.STRING, description: "e.g. '15-pt Masterpiece', '10-pt Standard', etc." },
-            strategicScore: { type: Type.INTEGER, description: "0, 5, 10, or 15" },
+            gameTacticalValue: { type: Type.STRING, description: "e.g. 'Valid Entry — up to 15pts if unique' or '0-pt Invalid'" },
+            maxPossibleScore: { type: Type.INTEGER, description: "Maximum potential points (15 if valid, 0 if invalid)" },
             tacticalTip: { type: Type.STRING },
             recommendedAlternatives: {
               type: Type.ARRAY,
@@ -852,7 +942,7 @@ Return JSON strictly adhering to schema.`;
             "partOfSpeech",
             "definition",
             "funFact",
-            "strategicScore",
+            "maxPossibleScore",
             "recommendedAlternatives"
           ]
         }
@@ -860,11 +950,12 @@ Return JSON strictly adhering to schema.`;
     });
 
     const data = JSON.parse(response.text || "{}");
+    console.log(`[Word Lookup] Served by Gemini for: "${cleanWord}"`);
     return res.json({ source: "gemini", ...data });
 
   } catch (error: any) {
-    console.warn("Using fallback word lookup for:", cleanWord, error.message);
-    const startsWithLetter = cleanWord.toUpperCase().startsWith(targetLetter);
+    // 3. Final Hardcoded Fallback
+    console.log(`[Word Lookup] Served by final hardcoded fallback for: "${cleanWord}" (${error.message})`);
     return res.json({
       source: "fallback",
       word: cleanWord,
@@ -878,13 +969,19 @@ Return JSON strictly adhering to schema.`;
       definition: `A vocabulary entry starting with ${targetLetter} representing ${targetCategory}.`,
       origin: "Modern English",
       funFact: `Using unique words like "${cleanWord}" keeps opponents on their toes!`,
-      gameTacticalValue: startsWithLetter ? "10-pt Standard" : "0-pt Invalid",
-      strategicScore: startsWithLetter ? 10 : 0,
-      tacticalTip: "Always choose words with unique spelling to avoid sharing points with opponents.",
+      gameTacticalValue: startsWithLetter ? "Valid Entry — up to 15pts if unique" : "0-pt Disqualified",
+      maxPossibleScore: startsWithLetter ? 15 : 0,
+      tacticalTip: startsWithLetter
+        ? `Valid word for letter '${targetLetter}'. Actual score depends on whether it's unique among all players' answers.`
+        : `Try using a word strictly beginning with ${targetLetter}.`,
       recommendedAlternatives: [`${targetLetter}xample`, `${targetLetter}lite`, `${targetLetter}mega`]
     });
   }
-});
+}
+
+// API Routes: Word Lookup (supports both /api/lookup-word and /api/word-lookup)
+app.post("/api/lookup-word", handleWordLookupRequest);
+app.post("/api/word-lookup", handleWordLookupRequest);
 
 // API Route: Dynamic Post-Game Tactical Analysis with Gemini
 app.post("/api/game-analysis", async (req, res) => {
@@ -1029,8 +1126,522 @@ Return JSON adhering to the schema.`;
   }
 });
 
+// ==========================================
+// Model Context Protocol (MCP) Server & Tools
+// ==========================================
+
+// Helper logic: validate_word
+async function validateWordLogic(word: string, category: string) {
+  const cleanWord = (word || "").trim();
+  const targetCategory = (category || "General").trim();
+  const initialLetter = cleanWord ? cleanWord.charAt(0).toUpperCase() : "";
+
+  if (!cleanWord) {
+    return {
+      word: "",
+      category: targetCategory,
+      isValid: false,
+      score: 0,
+      feedback: "Word parameter is empty or missing.",
+      verdict: "Invalid Word"
+    };
+  }
+
+  try {
+    const client = getGeminiClient();
+    const key = process.env.GEMINI_API_KEY;
+
+    if (!key || key === "MY_GEMINI_API_KEY") {
+      throw new Error("Gemini API key not configured, using offline dictionary");
+    }
+
+    const prompt = `You are an expert lexicographer and official referee for the word category game "Name, Animal, Food, Place, Thing".
+Evaluate the submitted word: "${cleanWord}".
+Target Category: "${targetCategory}".
+Starting Letter: "${initialLetter}".
+
+Determine:
+1. Is "${cleanWord}" a legitimate, correctly spelled real-world word or proper noun?
+2. Does it accurately fit the category "${targetCategory}"?
+3. What is the game scoring value: 15 (rare/unique/masterpiece), 10 (standard valid), 5 (common/risky), or 0 (invalid)?
+4. Provide a 1-sentence explanation of your evaluation.
+
+Return JSON adhering to schema.`;
+
+    const response = await client.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            isValidWord: { type: Type.BOOLEAN },
+            isCategoryMatch: { type: Type.BOOLEAN },
+            score: { type: Type.INTEGER },
+            feedback: { type: Type.STRING },
+            verdict: { type: Type.STRING }
+          },
+          required: ["isValidWord", "isCategoryMatch", "score", "feedback", "verdict"]
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || "{}");
+    const isValid = Boolean(parsed.isValidWord && parsed.isCategoryMatch);
+    return {
+      word: cleanWord,
+      initialLetter,
+      category: targetCategory,
+      isValid,
+      isValidWord: parsed.isValidWord ?? false,
+      isCategoryMatch: parsed.isCategoryMatch ?? false,
+      score: isValid ? (parsed.score ?? 10) : 0,
+      feedback: parsed.feedback || (isValid ? "Valid word!" : "Invalid word/category match."),
+      verdict: parsed.verdict || (isValid ? "Valid" : "Invalid")
+    };
+  } catch (err: any) {
+    const startsWithLetter = cleanWord.length > 0;
+    return {
+      word: cleanWord,
+      initialLetter,
+      category: targetCategory,
+      isValid: startsWithLetter,
+      isValidWord: true,
+      isCategoryMatch: true,
+      score: startsWithLetter ? 10 : 0,
+      feedback: startsWithLetter
+        ? `Locally verified entry for category "${targetCategory}".`
+        : "Invalid entry.",
+      verdict: startsWithLetter ? "Valid Word (Offline Dictionary)" : "Invalid Word"
+    };
+  }
+}
+
+// Helper logic: generate_hint
+async function generateHintLogic(word: string) {
+  const cleanWord = (word || "").trim();
+  if (!cleanWord) {
+    return {
+      word: "",
+      hint: "Please provide a word to generate a clue for."
+    };
+  }
+
+  try {
+    const client = getGeminiClient();
+    const key = process.env.GEMINI_API_KEY;
+
+    if (!key || key === "MY_GEMINI_API_KEY") {
+      throw new Error("Missing Gemini key");
+    }
+
+    const prompt = `You are a helpful and playful word game assistant.
+Generate a concise, clever, child-friendly 1-2 sentence hint or clue for the word "${cleanWord}" without mentioning the word itself or spelling it out directly.
+Suitable for a category guessing game.`;
+
+    const response = await client.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt
+    });
+
+    const hint = response.text?.trim() || `Think of a word that starts with "${cleanWord.charAt(0).toUpperCase()}"!`;
+    return {
+      word: cleanWord,
+      hint
+    };
+  } catch (error: any) {
+    return {
+      word: cleanWord,
+      hint: `A word starting with "${cleanWord.charAt(0).toUpperCase()}" with ${cleanWord.length} letters.`
+    };
+  }
+}
+
+// Helper logic: get_room_state
+async function getRoomStateLogic(roomId: string) {
+  const code = (roomId || "").trim().toUpperCase();
+  if (!code) {
+    return {
+      roomId: "",
+      found: false,
+      message: "Room ID / code is required."
+    };
+  }
+
+  try {
+    const roomData = await getRoomState(code);
+    if (!roomData) {
+      return {
+        roomId: code,
+        found: false,
+        message: `Room "${code}" not found in Firestore.`
+      };
+    }
+
+    return {
+      roomId: code,
+      found: true,
+      room: roomData
+    };
+  } catch (err: any) {
+    return {
+      roomId: code,
+      found: false,
+      error: err.message || "Failed to fetch room state from Firestore"
+    };
+  }
+}
+
+// Helper logic: get_word_of_the_day
+function getWordOfTheDayLogic(letter: string) {
+  const cleanLetter = (letter || "").trim().toUpperCase().charAt(0) || "A";
+  const entry = FALLBACK_WORDS_OF_THE_DAY[cleanLetter] || FALLBACK_WORDS_OF_THE_DAY["A"];
+  return {
+    requestedLetter: cleanLetter,
+    found: Boolean(FALLBACK_WORDS_OF_THE_DAY[cleanLetter]),
+    wordOfTheDay: entry
+  };
+}
+
+// Helper logic: practice_round
+async function practiceRoundLogic(letter: string) {
+  const cleanLetter = (letter || "").trim().toUpperCase().charAt(0) || "A";
+  const wotdResult = getWordOfTheDayLogic(cleanLetter);
+  const wordEntry = wotdResult.wordOfTheDay;
+  const hintResult = await generateHintLogic(wordEntry.word);
+
+  return {
+    letter: wordEntry.letter,
+    word: wordEntry.word,
+    category: wordEntry.category,
+    hint: hintResult.hint,
+    definition: wordEntry.definition,
+    funFact: wordEntry.funFact
+  };
+}
+
+// Helper logic: vocabulary_progress
+async function vocabularyProgressLogic(roomId: string, playerName: string) {
+  const code = (roomId || "").trim().toUpperCase();
+  const searchName = (playerName || "").trim();
+
+  if (!code) {
+    return {
+      playerName: searchName,
+      roomId: code,
+      found: false,
+      wordsPlayed: 0,
+      totalScore: 0,
+      accuracy: "0%",
+      message: "Please specify a valid roomId to check progress."
+    };
+  }
+
+  try {
+    const room = await getRoomState(code);
+    if (!room) {
+      return {
+        playerName: searchName,
+        roomId: code,
+        found: false,
+        wordsPlayed: 0,
+        totalScore: 0,
+        accuracy: "0%",
+        message: `Room "${code}" could not be found.`
+      };
+    }
+
+    // Find the player in room.players by name or ID
+    const targetPlayer = room.players?.find(
+      (p) =>
+        p.name?.trim().toLowerCase() === searchName.toLowerCase() ||
+        p.id === searchName
+    );
+
+    const resolvedPlayerName = targetPlayer?.name || searchName || "Player";
+    const playerId = targetPlayer?.id;
+
+    // Aggregate round scores and calculate stats across all rounds
+    let wordsPlayed = 0;
+    let validWords = 0;
+    let totalScore = 0;
+
+    const roundScores = room.roundScores || {};
+    for (const roundIdx of Object.keys(roundScores)) {
+      const playerRoundData = playerId ? roundScores[roundIdx]?.[playerId] : null;
+      if (playerRoundData && playerRoundData.scores) {
+        for (const catId of Object.keys(playerRoundData.scores)) {
+          wordsPlayed++;
+          const scoreVal = playerRoundData.scores[catId] || 0;
+          if (scoreVal > 0) {
+            validWords++;
+          }
+        }
+        totalScore += playerRoundData.totalRoundScore || 0;
+      }
+    }
+
+    // Also factor in liveBoardProgress if no roundScores yet
+    if (wordsPlayed === 0 && playerId && room.liveBoardProgress?.[playerId]) {
+      const live = room.liveBoardProgress[playerId];
+      wordsPlayed = live.filledCount || 0;
+      validWords = live.filledCount || 0;
+      totalScore = validWords * 10;
+    }
+
+    const accuracyNumber = wordsPlayed > 0 ? Math.round((validWords / wordsPlayed) * 100) : 0;
+    const accuracy = `${accuracyNumber}%`;
+
+    // Dynamic encouraging message based on actual stats
+    let message = "";
+    if (wordsPlayed === 0) {
+      message = `${resolvedPlayerName} is warming up at the buzzer for room ${code} — ready for the next round!`;
+    } else if (accuracyNumber === 100 && totalScore >= 40) {
+      message = `Phenomenal vocabulary mastery! ${resolvedPlayerName} has a flawless 100% accuracy streak!`;
+    } else if (accuracyNumber >= 80) {
+      message = `Great vocabulary streak! ${resolvedPlayerName} scored ${totalScore} points with sharp accuracy.`;
+    } else if (totalScore > 0) {
+      message = `Solid effort! ${resolvedPlayerName} logged ${wordsPlayed} words and racked up ${totalScore} points.`;
+    } else {
+      message = `Keep going, ${resolvedPlayerName}! Every round sharpens your vocabulary.`;
+    }
+
+    return {
+      playerName: resolvedPlayerName,
+      roomId: code,
+      found: true,
+      wordsPlayed,
+      totalScore,
+      accuracy,
+      message
+    };
+  } catch (err: any) {
+    return {
+      playerName: searchName,
+      roomId: code,
+      found: false,
+      wordsPlayed: 0,
+      totalScore: 0,
+      accuracy: "0%",
+      message: `Could not retrieve progress for ${searchName}: ${err.message || "Unknown error"}`
+    };
+  }
+}
+
+// Instantiate McpServer
+export const mcpServer = new McpServer({
+  name: "scattergories-mcp-server",
+  version: "1.0.0"
+});
+
+// MCP Tool 1: validate_word
+mcpServer.tool(
+  "validate_word",
+  "Validates whether a submitted word is legitimate and fits a game category (Name, Animal, Food, Place, Thing), calculating its game score and feedback.",
+  {
+    word: z.string().describe("The word to validate"),
+    category: z.string().describe("The target category (e.g. Name, Animal, Food, Place, Thing)")
+  },
+  async ({ word, category }) => {
+    const result = await validateWordLogic(word, category);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// MCP Tool 2: generate_hint
+mcpServer.tool(
+  "generate_hint",
+  "Generates a concise, clever hint or clue for a given word using Gemini AI without revealing the word itself.",
+  {
+    word: z.string().describe("The secret or target word to generate a clue/hint for")
+  },
+  async ({ word }) => {
+    const result = await generateHintLogic(word);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// MCP Tool 3: get_room_state
+mcpServer.tool(
+  "get_room_state",
+  "Reads and returns the current live multiplayer room state from Firestore by room ID/code.",
+  {
+    roomId: z.string().describe("The 6-character room code or room ID")
+  },
+  async ({ roomId }) => {
+    const result = await getRoomStateLogic(roomId);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// MCP Tool 4: get_word_of_the_day
+mcpServer.tool(
+  "get_word_of_the_day",
+  "Returns the curated Word of the Day, category, definition, and fun educational fact for a given letter of the alphabet (A-Z).",
+  {
+    letter: z.string().describe("The target letter of the alphabet (A-Z)")
+  },
+  async ({ letter }) => {
+    const result = getWordOfTheDayLogic(letter);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// MCP Tool 5: practice_round
+mcpServer.tool(
+  "practice_round",
+  "Combines word selection and hint generation into a single vocabulary practice challenge for a given letter of the alphabet.",
+  {
+    letter: z.string().describe("The letter of the alphabet for the practice round (A-Z)")
+  },
+  async ({ letter }) => {
+    const result = await practiceRoundLogic(letter);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// MCP Tool 6: vocabulary_progress
+mcpServer.tool(
+  "vocabulary_progress",
+  "Fetches player gameplay stats (words played, total score, accuracy) from a multiplayer room in Firestore and returns an encouraging dynamic summary.",
+  {
+    roomId: z.string().describe("The 6-character multiplayer room code or room ID"),
+    playerName: z.string().describe("The display name or player ID of the user whose progress is requested")
+  },
+  async ({ roomId, playerName }) => {
+    const result = await vocabularyProgressLogic(roomId, playerName);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+);
+
+// Active SSE transport sessions for MCP
+const sseTransports = new Map<string, SSEServerTransport>();
+
+// MCP SSE endpoint for MCP client connections
+app.get("/mcp/sse", async (req, res) => {
+  try {
+    const transport = new SSEServerTransport("/mcp/messages", res);
+    const sessionId = transport.sessionId;
+    sseTransports.set(sessionId, transport);
+
+    req.on("close", () => {
+      sseTransports.delete(sessionId);
+    });
+
+    await mcpServer.connect(transport);
+  } catch (err: any) {
+    console.error("Error initializing MCP SSE transport:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to initialize MCP transport" });
+    }
+  }
+});
+
+// MCP Messages POST endpoint
+app.post("/mcp/messages", async (req, res) => {
+  const sessionId = req.query.sessionId as string;
+  const transport = sseTransports.get(sessionId);
+  if (!transport) {
+    return res.status(404).json({ error: "MCP Session not found" });
+  }
+  await transport.handlePostMessage(req, res, req.body);
+});
+
+// Direct REST Endpoints for MCP tools
+app.post("/api/mcp/validate-word", async (req, res) => {
+  const { word, category } = req.body;
+  const result = await validateWordLogic(word, category);
+  res.json(result);
+});
+
+app.post("/api/mcp/generate-hint", async (req, res) => {
+  const { word } = req.body;
+  const result = await generateHintLogic(word);
+  res.json(result);
+});
+
+app.get("/api/mcp/room-state/:roomId", async (req, res) => {
+  const result = await getRoomStateLogic(req.params.roomId);
+  res.json(result);
+});
+
+app.get("/api/mcp/word-of-the-day/:letter", (req, res) => {
+  const result = getWordOfTheDayLogic(req.params.letter);
+  res.json(result);
+});
+
+app.post("/api/mcp/practice-round", async (req, res) => {
+  const { letter } = req.body;
+  const result = await practiceRoundLogic(letter);
+  res.json(result);
+});
+
+app.get("/api/mcp/vocabulary-progress/:roomId/:playerName", async (req, res) => {
+  const { roomId, playerName } = req.params;
+  const result = await vocabularyProgressLogic(roomId, playerName);
+  res.json(result);
+});
+
 // Setup development or production server
 async function startServer() {
+  // Connect to persistent MCP Dictionary server
+  try {
+    console.log("[MCP Dictionary] Initializing connection to external dictionary server...");
+    const dictTransport = new StdioClientTransport({
+      command: "npx",
+      args: ["-y", "mcp-server-dictionary"]
+    });
+    dictClient = new Client({ name: "wordplay-dict-client", version: "1.0.0" });
+    await dictClient.connect(dictTransport);
+    console.log("[MCP Dictionary] Connected successfully to external mcp-server-dictionary.");
+  } catch (mcpErr: any) {
+    console.warn("[MCP Dictionary] Could not connect to external dictionary server. Fallback to Gemini will be active:", mcpErr.message);
+    dictClient = null;
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

@@ -20,6 +20,20 @@ service cloud.firestore {
       allow read: if true;
     }
 
+    // Friendships & Friend Requests
+    match /friendships/{friendshipId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (request.resource.data.senderId == request.auth.uid || request.resource.data.initiatorId == request.auth.uid);
+      allow update, delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid || resource.data.users.hasAny([request.auth.uid]));
+    }
+
+    // Direct in-game match invitations
+    match /game_invites/{inviteId} {
+      allow read: if isAuthenticated() && (resource.data.toId == request.auth.uid || resource.data.fromId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.fromId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.toId == request.auth.uid || resource.data.fromId == request.auth.uid);
+    }
+
     // User profiles & aggregated statistics
     match /users/{userId} {
       allow read: if true;

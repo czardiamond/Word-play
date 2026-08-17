@@ -34,7 +34,8 @@ import {
   ShoppingBag,
   Check,
   Lock,
-  Palette
+  Palette,
+  Share2
 } from "lucide-react";
 
 interface UserProfileModalProps {
@@ -159,6 +160,53 @@ export default function UserProfileModal({
       if (onProfileUpdated) onProfileUpdated();
     } else {
       setError(res.message);
+    }
+  };
+
+  const handleShareHistoryEntry = async (item: MatchHistoryEntry) => {
+    const shareTitle = item.isWinner
+      ? `🏆 Victory in Scattergories (${item.score} pts)!`
+      : `📝 Scattergories Match Result: Finished #${item.rank || 1} (${item.score} pts)`;
+
+    const shareText = `🎮 Scattergories Match History:
+👤 Player: ${profile?.displayName || "Player"}
+${item.isWinner ? "🏆 Result: Victory!" : `🏅 Rank: #${item.rank || 1}`}
+⭐ Score: ${item.score} pts
+🎯 Accuracy: ${item.accuracy || 80}%
+🔤 Letters: ${item.lettersPlayed?.join(", ") || "—"} (${item.roundsCount} rounds)
+🏷️ Categories: ${item.categoriesCount}
+🌐 Mode: ${item.gameMode === "multiplayer" ? "Multiplayer Room" : "Classroom Singleplayer"}
+📅 Date: ${item.formattedDate}
+
+Play Scattergories with me!`;
+
+    const shareUrl = window.location.href;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl
+        });
+        setSuccessMsg("Shared match performance!");
+      } catch (err: any) {
+        if (err.name !== "AbortError") {
+          try {
+            await navigator.clipboard.writeText(`${shareTitle}\n\n${shareText}\n\n${shareUrl}`);
+            setSuccessMsg("Summary copied to clipboard!");
+          } catch (clipErr) {
+            console.warn("Clipboard fallback error:", clipErr);
+          }
+        }
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(`${shareTitle}\n\n${shareText}\n\n${shareUrl}`);
+        setSuccessMsg("Summary copied to clipboard!");
+      } catch (clipErr) {
+        console.warn("Clipboard fallback error:", clipErr);
+      }
     }
   };
 
@@ -659,7 +707,7 @@ export default function UserProfileModal({
                         </div>
                       </div>
 
-                      {/* Right: Score and Accuracy */}
+                      {/* Right: Score, Accuracy, and Share */}
                       <div className="flex items-center gap-3 self-end sm:self-center">
                         {item.accuracy > 0 && (
                           <div className="text-right hidden md:block">
@@ -672,6 +720,14 @@ export default function UserProfileModal({
                         <div className="px-3.5 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-600 dark:text-blue-400 font-display font-black text-sm">
                           {item.score} pts
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => handleShareHistoryEntry(item)}
+                          title="Share match performance"
+                          className="p-2 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-all cursor-pointer border border-slate-200/60 dark:border-slate-800"
+                        >
+                          <Share2 size={15} />
+                        </button>
                       </div>
                     </div>
                   ))}

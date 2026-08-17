@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Player, Answers, Category, CategoryInfo } from "../types";
 import NotebookPaper from "./NotebookPaper";
 import { playSubmitChime } from "../utils/soundEffects";
@@ -32,7 +32,7 @@ import {
   LivePlayerProgress
 } from "../utils/roomService";
 import { auth } from "../firebase";
-import { fetchDynamicBotMoves, DynamicBotResponse } from "../utils/aiBotGenerator";
+import { fetchDynamicBotMoves, DynamicBotResponse, generateLocalBotAnswers, getBotPersonalityTaunt } from "../utils/aiBotGenerator";
 
 interface GameplayScreenProps {
   letter: string;
@@ -68,8 +68,8 @@ export default function GameplayScreen({
   id
 }: GameplayScreenProps) {
   const currentUid = localPlayerId || auth.currentUser?.uid || "";
-  const humanPlayers = players.filter((p) => !p.isBot);
-  const botPlayers = players.filter((p) => p.isBot);
+  const humanPlayers = useMemo(() => players.filter((p) => !p.isBot), [players]);
+  const botPlayers = useMemo(() => players.filter((p) => p.isBot), [players]);
 
   // In online multiplayer, active player is this local device's player
   const myPlayer = isOnlineMultiplayer
@@ -90,6 +90,12 @@ export default function GameplayScreen({
 
   const hasAdvancedGradingRef = useRef(false);
   const liveDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Ref to always have latest onRoundFinished without triggering useEffect loops
+  const onRoundFinishedRef = useRef(onRoundFinished);
+  useEffect(() => {
+    onRoundFinishedRef.current = onRoundFinished;
+  }, [onRoundFinished]);
 
   useEffect(() => {
     if (isRevealed) {
@@ -144,12 +150,43 @@ export default function GameplayScreen({
     return initial;
   });
 
-  const handleAutoSubmit = async () => {
+  const [botStatuses, setBotStatuses] = useState<Record<string, { status: string; progress: number }>>({});
+  const [aiBotResponses, setAiBotResponses] = useState<Record<string, DynamicBotResponse>>(() => {
+    const initial: Record<string, DynamicBotResponse> = {};
+    botPlayers.forEach((b) => {
+      const answers = generateLocalBotAnswers(letter, b, categories, difficulty);
+      const pers = (b.botPersonality || "joe") as "susie" | "harry" | "sam" | "joe";
+      initial[b.id] = {
+        id: b.id,
+        answers,
+        taunt: getBotPersonalityTaunt(pers, letter, difficulty),
+        estimatedScore: pers === "susie" ? 75 : pers === "harry" ? 55 : pers === "sam" ? 50 : 65,
+        speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28
+      };
+    });
+    return initial;
+  });
+  const [displayedTaunts, setDisplayedTaunts] = useState<Record<string, string>>({});
+
+  // Stable ref storage for latest state when callbacks fire
+  const submissionsRef = useRef(submissions);
+  submissionsRef.current = submissions;
+
+  const timesTakenRef = useRef(timesTaken);
+  timesTakenRef.current = timesTaken;
+
+  const aiBotResponsesRef = useRef(aiBotResponses);
+  aiBotResponsesRef.current = aiBotResponses;
+
+  const handleAutoSubmit = useCallback(async () => {
     playSubmitChime();
     const elapsed = revealTime > 0 ? Math.max(1, Math.round((Date.now() - revealTime) / 1000)) : timeLimit;
-    const activeId = activeHuman.id;
+    const activeId = activeHuman?.id;
+    if (!activeId) return;
+
+    const currentSubmissions = submissionsRef.current;
     const nextTimes = {
-      ...timesTaken,
+      ...timesTakenRef.current,
       [activeId]: elapsed
     };
     setTimesTaken(nextTimes);
@@ -157,10 +194,10 @@ export default function GameplayScreen({
 
     if (isOnlineMultiplayer && roomCode) {
       try {
-        await submitRoundAnswers(roomCode, roundIndex, activeId, submissions[activeId] || {});
+        await submitRoundAnswers(roomCode, roundIndex, activeId, currentSubmissions[activeId] || {});
         // Also update live progress as submitted
         updateLiveBoardProgress(roomCode, activeId, {
-          filledCount: Object.values(submissions[activeId] || {}).filter((v) => typeof v === "string" && v.trim().length > 0).length,
+          filledCount: Object.values(currentSubmissions[activeId] || {}).filter((v) => typeof v === "string" && v.trim().length > 0).length,
           totalCount: categories.length,
           isSubmitted: true
         });
@@ -175,23 +212,37 @@ export default function GameplayScreen({
         setHasSubmittedLocally(false);
         setTimeLeft(timeLimit);
       } else {
-        const finalPayload: Record<string, Answers> = { ...submissions };
+        const finalPayload: Record<string, Answers> = { ...currentSubmissions };
         botPlayers.forEach((bot) => {
-          if (aiBotResponses[bot.id]?.answers) {
-            finalPayload[bot.id] = aiBotResponses[bot.id].answers;
+          const botAns = aiBotResponsesRef.current[bot.id]?.answers;
+          if (botAns && Object.keys(botAns).length > 0) {
+            finalPayload[bot.id] = botAns;
+          } else {
+            finalPayload[bot.id] = generateLocalBotAnswers(letter, bot, categories, difficulty);
           }
         });
-        onRoundFinished(finalPayload, nextTimes);
+        onRoundFinishedRef.current(finalPayload, nextTimes);
       }
     }
-  };
+  }, [
+    revealTime,
+    timeLimit,
+    activeHuman?.id,
+    isOnlineMultiplayer,
+    roomCode,
+    roundIndex,
+    categories.length,
+    currentHumanIndex,
+    humanPlayers.length,
+    botPlayers
+  ]);
 
   // React when matchPhase flips to GRADING or stop was called
   useEffect(() => {
     if (isOnlineMultiplayer && onlineRoomData?.matchPhase === "GRADING" && !hasSubmittedLocally) {
       handleAutoSubmit();
     }
-  }, [onlineRoomData?.matchPhase, isOnlineMultiplayer, hasSubmittedLocally]);
+  }, [onlineRoomData?.matchPhase, isOnlineMultiplayer, hasSubmittedLocally, handleAutoSubmit]);
 
   // Host-only effect: check when all human players have submitted in Firestore
   useEffect(() => {
@@ -208,8 +259,8 @@ export default function GameplayScreen({
       hasAdvancedGradingRef.current = true;
       if (timerRef.current) clearInterval(timerRef.current);
 
-      const assembledAnswers: Record<string, Answers> = { ...submissions };
-      const assembledTimes: Record<string, number> = { ...timesTaken };
+      const assembledAnswers: Record<string, Answers> = { ...submissionsRef.current };
+      const assembledTimes: Record<string, number> = { ...timesTakenRef.current };
 
       humanPlayers.forEach((hp) => {
         if (roundSubs[hp.id]) {
@@ -219,37 +270,35 @@ export default function GameplayScreen({
       });
 
       botPlayers.forEach((bot) => {
-        if (aiBotResponses[bot.id]?.answers) {
-          assembledAnswers[bot.id] = aiBotResponses[bot.id].answers;
+        const botAns = aiBotResponsesRef.current[bot.id]?.answers;
+        if (botAns && Object.keys(botAns).length > 0) {
+          assembledAnswers[bot.id] = botAns;
+        } else {
+          assembledAnswers[bot.id] = generateLocalBotAnswers(letter, bot, categories, difficulty);
         }
         if (!assembledTimes[bot.id]) {
-          assembledTimes[bot.id] = aiBotResponses[bot.id]?.speedSeconds || Math.round(timeLimit * 0.6) || 30;
+          assembledTimes[bot.id] = aiBotResponsesRef.current[bot.id]?.speedSeconds || Math.round(timeLimit * 0.6) || 30;
         }
       });
 
       advanceToGrading(roomCode).catch((err) => console.error("advanceToGrading error:", err));
 
-      setTimeout(() => {
-        onRoundFinished(assembledAnswers, assembledTimes);
+      const timer = setTimeout(() => {
+        onRoundFinishedRef.current(assembledAnswers, assembledTimes);
       }, 500);
+
+      return () => clearTimeout(timer);
     }
   }, [
     isOnlineMultiplayer,
     isHost,
     roomCode,
     roundIndex,
-    onlineRoomData,
+    onlineRoomData?.roundSubmissions,
     humanPlayers,
-    submissions,
-    timesTaken,
     botPlayers,
-    timeLimit,
-    onRoundFinished
+    timeLimit
   ]);
-
-  const [botStatuses, setBotStatuses] = useState<Record<string, { status: string; progress: number }>>({});
-  const [aiBotResponses, setAiBotResponses] = useState<Record<string, DynamicBotResponse>>({});
-  const [displayedTaunts, setDisplayedTaunts] = useState<Record<string, string>>({});
 
   // Prefetch dynamic bot moves
   useEffect(() => {
@@ -359,7 +408,7 @@ export default function GameplayScreen({
     }, 500);
 
     return () => clearInterval(interval);
-  }, [isRevealed, timeLimit, hasSubmittedLocally, isOnlineMultiplayer, onlineRoomData?.roundStartedAt]);
+  }, [isRevealed, timeLimit, hasSubmittedLocally, isOnlineMultiplayer, onlineRoomData?.roundStartedAt, handleAutoSubmit]);
 
   const handleInputChange = (category: Category, value: string) => {
     let formattedVal = value;

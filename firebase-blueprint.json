@@ -188,9 +188,56 @@
         "createdAt": { "type": "string" }
       },
       "required": ["code", "hostName", "players", "status"]
+    },
+    "friendship": {
+      "title": "Friendship",
+      "description": "Friend relationship or friend request between two users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "users": { "type": "array" },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 64 },
+        "senderAvatar": { "type": "string", "maxLength": 32 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "receiverName": { "type": "string", "maxLength": 64 },
+        "receiverAvatar": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "blocked"] },
+        "initiatorId": { "type": "string", "maxLength": 128 },
+        "blockedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["users", "senderId", "receiverId", "status"]
+    },
+    "game_invite": {
+      "title": "Game Invite",
+      "description": "In-game multiplayer match invitation sent to a friend",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "fromId": { "type": "string", "maxLength": 128 },
+        "fromName": { "type": "string", "maxLength": 64 },
+        "fromAvatar": { "type": "string", "maxLength": 32 },
+        "toId": { "type": "string", "maxLength": 128 },
+        "toName": { "type": "string", "maxLength": 64 },
+        "roomCode": { "type": "string", "maxLength": 16 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "expired"] },
+        "createdAt": { "type": "number" },
+        "expiresAt": { "type": "number" }
+      },
+      "required": ["fromId", "toId", "roomCode", "status"]
     }
   },
   "firestore": {
+    "/friendships/{friendshipId}": {
+      "schema": { "$ref": "friendship" },
+      "description": "Friendships, pending requests, and block lists"
+    },
+    "/game_invites/{inviteId}": {
+      "schema": { "$ref": "game_invite" },
+      "description": "Direct in-game invitations between players"
+    },
     "/users/{userId}": {
       "schema": { "$ref": "user_profile" },
       "description": "User profiles with Google account info and aggregated stats"

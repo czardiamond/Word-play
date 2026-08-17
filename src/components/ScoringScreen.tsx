@@ -24,7 +24,8 @@ import {
   BookOpen,
   Search
 } from "lucide-react";
-import { generateLocalBotAnswers, fetchDynamicBotMoves } from "../utils/aiBotGenerator";
+import { generateLocalBotAnswers, fetchDynamicBotMoves, getBotPersonalityTaunt } from "../utils/aiBotGenerator";
+import { submitRoundScores } from "../utils/roomService";
 
 interface ScoringScreenProps {
   letter: string;
@@ -36,6 +37,8 @@ interface ScoringScreenProps {
   onNextRound: (roundResults: Record<string, PlayerRoundResult>) => void;
   isOnlineMultiplayer?: boolean;
   isHost?: boolean;
+  roomCode?: string;
+  roundIndex?: number;
   id?: string;
 }
 
@@ -49,6 +52,8 @@ export default function ScoringScreen({
   onNextRound,
   isOnlineMultiplayer = false,
   isHost = false,
+  roomCode,
+  roundIndex,
   id
 }: ScoringScreenProps) {
   const [loading, setLoading] = useState(true);
@@ -221,27 +226,22 @@ export default function ScoringScreen({
         setError(null);
 
         const bots = players.filter((p) => p.isBot);
-        let finalAnswers: Record<string, Answers> = { ...playerAnswers };
+        const finalAnswers: Record<string, Answers> = { ...playerAnswers };
         const botMetaMap: Record<string, { taunt?: string; estimatedScore?: number; speedSeconds?: number }> = {};
 
-        if (bots.length > 0) {
-          const dynamicBots = await fetchDynamicBotMoves(letter, bots, categories, difficulty);
-          bots.forEach((bot) => {
-            const dynamic = dynamicBots[bot.id];
-            if (dynamic) {
-              if (!finalAnswers[bot.id] || Object.keys(finalAnswers[bot.id]).length === 0) {
-                finalAnswers[bot.id] = dynamic.answers;
-              }
-              botMetaMap[bot.id] = {
-                taunt: dynamic.taunt,
-                estimatedScore: dynamic.estimatedScore,
-                speedSeconds: dynamic.speedSeconds
-              };
-            } else if (!finalAnswers[bot.id] || Object.keys(finalAnswers[bot.id]).length === 0) {
-              finalAnswers[bot.id] = generateLocalBotAnswers(letter, bot, categories, difficulty);
-            }
-          });
-        }
+        // Immediately guarantee bot answers from playerAnswers or local dictionary
+        bots.forEach((bot) => {
+          const existing = finalAnswers[bot.id];
+          if (!existing || Object.values(existing).every((v) => !v || v.trim() === "")) {
+            finalAnswers[bot.id] = generateLocalBotAnswers(letter, bot, categories, difficulty);
+          }
+          const pers = (bot.botPersonality || "joe") as "susie" | "harry" | "sam" | "joe";
+          botMetaMap[bot.id] = {
+            taunt: getBotPersonalityTaunt(pers, letter, difficulty),
+            estimatedScore: pers === "susie" ? 75 : pers === "harry" ? 55 : pers === "sam" ? 50 : 65,
+            speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28
+          };
+        });
 
         const playersPayload = players.map((p) => {
           const answers: Answers = {};
@@ -255,11 +255,17 @@ export default function ScoringScreen({
           };
         });
 
+        // Fast 5.5-second timeout for validation request
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5500);
+
         const response = await fetch("/api/validate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ letter, players: playersPayload, categories, difficulty })
+          body: JSON.stringify({ letter, players: playersPayload, categories, difficulty }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
           throw new Error("Validation server error");
@@ -294,6 +300,18 @@ export default function ScoringScreen({
 
           const scoredResults = calculateScores(rawResults);
           setResults(scoredResults);
+          if (isOnlineMultiplayer && isHost && roomCode && typeof roundIndex === "number") {
+            const scoresByPlayer: Record<string, { scores: Record<string, number>; totalRoundScore: number }> = {};
+            Object.entries(scoredResults).forEach(([playerId, res]) => {
+              if (res.scores) {
+                scoresByPlayer[playerId] = {
+                  scores: res.scores,
+                  totalRoundScore: res.totalRoundScore || 0
+                };
+              }
+            });
+            submitRoundScores(roomCode, roundIndex, scoresByPlayer).catch(console.error);
+          }
           setLoading(false);
           playBadgeFanfare();
         }
@@ -351,6 +369,18 @@ export default function ScoringScreen({
 
     const scored = calculateScores(rawResults);
     setResults(scored);
+    if (isOnlineMultiplayer && isHost && roomCode && typeof roundIndex === "number") {
+      const scoresByPlayer: Record<string, { scores: Record<string, number>; totalRoundScore: number }> = {};
+      Object.entries(scored).forEach(([playerId, res]) => {
+        if (res.scores) {
+          scoresByPlayer[playerId] = {
+            scores: res.scores,
+            totalRoundScore: res.totalRoundScore || 0
+          };
+        }
+      });
+      submitRoundScores(roomCode, roundIndex, scoresByPlayer).catch(console.error);
+    }
   };
 
   const calculateScores = (currentResults: Record<string, PlayerRoundResult>): Record<string, PlayerRoundResult> => {

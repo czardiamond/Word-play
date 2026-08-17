@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { GameState, Player, Round, Answers, PlayerRoundResult, CategoryInfo } from "./types";
 import SetupScreen from "./components/SetupScreen";
 import WheelSpinner from "./components/WheelSpinner";
@@ -9,9 +9,18 @@ import MasterToolbar from "./components/MasterToolbar";
 import SparkleBadge from "./components/SparkleBadge";
 import WinnerCelebrationOverlay from "./components/WinnerCelebrationOverlay";
 import GameAnalysisModal from "./components/GameAnalysisModal";
+import FriendNotificationsToast from "./components/FriendNotificationsToast";
+import FriendsModal from "./components/FriendsModal";
 import { saveHighScore } from "./utils/highScores";
 import { recordCompletedMatch } from "./utils/duolingoSystem";
-import { recordUserMatchHistory, syncUserProfile } from "./utils/userProfileService";
+import { recordUserMatchHistory, syncUserProfile, getLocalUserProfile } from "./utils/userProfileService";
+import {
+  Friendship,
+  GameInvite,
+  subscribeToFriendships,
+  subscribeToIncomingGameInvites,
+  updateUserPresence
+} from "./utils/friendService";
 import {
   getUserRatingLocal,
   calculateEloDelta,
@@ -26,10 +35,11 @@ import {
   enterSpinPhase,
   spinLetter,
   getRoundController,
-  endMatch
+  endMatch,
+  joinRoom
 } from "./utils/roomService";
 import { auth, onAuthStateChanged } from "./firebase";
-import { Trophy, RefreshCw, RotateCcw, Download, Crown, Sparkles, BarChart3 } from "lucide-react";
+import { Trophy, RefreshCw, RotateCcw, Download, Crown, Sparkles, BarChart3, Share2, Check } from "lucide-react";
 
 const ALPHABET = [
   "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
@@ -78,18 +88,54 @@ export default function App() {
   const [activeOnlineRoomCode, setActiveOnlineRoomCode] = useState<string | null>(null);
   const [onlineRoomData, setOnlineRoomData] = useState<RoomData | null>(null);
   const [isSummaryAnalysisOpen, setIsSummaryAnalysisOpen] = useState<boolean>(false);
+  const [friendships, setFriendships] = useState<Friendship[]>([]);
+  const [incomingInvites, setIncomingInvites] = useState<GameInvite[]>([]);
+  const [isFriendsModalOpen, setIsFriendsModalOpen] = useState<boolean>(false);
+  const [activeUser, setActiveUser] = useState(auth.currentUser);
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
 
-  const currentUid = auth.currentUser?.uid || "";
+  const currentUid = activeUser?.uid || auth.currentUser?.uid || "";
 
   // Continuous user profile and cloud memory sync on auth changes
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
+      setActiveUser(user);
       if (user) {
         syncUserProfile(user).catch(console.warn);
       }
     });
     return () => unsub();
   }, []);
+
+  // Friend System Subscriptions & Presence Heartbeat
+  useEffect(() => {
+    if (!currentUid) return;
+
+    const unsubFriends = subscribeToFriendships(currentUid, (list) => {
+      setFriendships(list);
+    });
+
+    const unsubInvites = subscribeToIncomingGameInvites(currentUid, (invites) => {
+      setIncomingInvites(invites);
+    });
+
+    const presenceState = activeOnlineRoomCode ? "in_game" : "online";
+    updateUserPresence(currentUid, presenceState, activeOnlineRoomCode).catch(console.warn);
+    const interval = setInterval(() => {
+      updateUserPresence(currentUid, presenceState, activeOnlineRoomCode).catch(console.warn);
+    }, 45000);
+
+    return () => {
+      unsubFriends();
+      unsubInvites();
+      clearInterval(interval);
+    };
+  }, [currentUid, activeOnlineRoomCode]);
+
+  const incomingFriendRequests = useMemo(
+    () => friendships.filter((f) => f.status === "pending" && f.receiverId === currentUid),
+    [friendships, currentUid]
+  );
 
   const humanPlayers = useMemo(() => gameState.players.filter((p) => !p.isBot), [gameState.players]);
   const isOnlineMultiplayer = Boolean(activeOnlineRoomCode) && humanPlayers.length >= 2;
@@ -293,14 +339,14 @@ export default function App() {
   };
 
   // 3. Collect active human answers and transition to grading
-  const handleRoundFinished = (humanAnswers: Record<string, Answers>, humanTimes: Record<string, number>) => {
+  const handleRoundFinished = useCallback((humanAnswers: Record<string, Answers>, humanTimes: Record<string, number>) => {
     setActiveHumanAnswers(humanAnswers);
     setActiveHumanTimes(humanTimes);
     setGameState((prev) => ({
       ...prev,
       gamePhase: "GRADING"
     }));
-  };
+  }, []);
 
   // 4. Conclude grading, save round results, show round summary
   const handleNextRound = (roundResults: Record<string, PlayerRoundResult>) => {
@@ -553,6 +599,101 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Share player's match performance to external platforms using Web Share API
+  const handleSharePerformance = async () => {
+    if (gameState.rounds.length === 0) return;
+
+    const humanPlayer = gameState.players.find((p) => !p.isBot) || gameState.players[0];
+    const playerScore = cumulativeScores[humanPlayer.id] || 0;
+    const playerRank = rankedPlayers.findIndex((p) => p.id === humanPlayer.id) + 1;
+    const isWinner = playerRank === 1;
+    const lettersList = gameState.rounds.map((r) => r.letter);
+    const totalPossible = gameState.rounds.length * gameState.categories.length * 15;
+    const accuracy = Math.min(100, Math.max(50, Math.round((playerScore / (totalPossible || 1)) * 100)));
+
+    // Match history data structure mapping
+    const matchSummaryRecord = {
+      playerName: humanPlayer.name,
+      score: playerScore,
+      rank: playerRank,
+      isWinner,
+      roundsCount: gameState.rounds.length,
+      lettersPlayed: lettersList,
+      categoriesCount: gameState.categories.length,
+      opponentCount: gameState.players.length - 1,
+      accuracy,
+      gameMode: isOnlineMultiplayer ? "Multiplayer Room" : "Classroom Singleplayer"
+    };
+
+    const shareTitle = isWinner
+      ? `🏆 Match Champion in Scattergories (${matchSummaryRecord.score} pts)!`
+      : `📝 Scattergories Match Result: Finished #${matchSummaryRecord.rank} (${matchSummaryRecord.score} pts)`;
+
+    const shareText = `🎮 Scattergories Match Summary:
+👤 Player: ${matchSummaryRecord.playerName}
+${isWinner ? "🏆 Status: Match Winner!" : `🏅 Rank: #${matchSummaryRecord.rank} of ${rankedPlayers.length}`}
+⭐ Total Score: ${matchSummaryRecord.score} pts
+🎯 Accuracy: ${matchSummaryRecord.accuracy}%
+🔤 Letters: ${matchSummaryRecord.lettersPlayed.join(", ")} (${matchSummaryRecord.roundsCount} rounds)
+🏷️ Categories: ${matchSummaryRecord.categoriesCount}
+🌐 Mode: ${matchSummaryRecord.gameMode}
+
+Play Scattergories with me!`;
+
+    const shareUrl = window.location.href;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl
+        });
+        setShareFeedback("Shared successfully!");
+        setTimeout(() => setShareFeedback(null), 3000);
+      } catch (err: any) {
+        if (err.name !== "AbortError") {
+          // Fallback to clipboard if share failed
+          try {
+            await navigator.clipboard.writeText(`${shareTitle}\n\n${shareText}\n\n${shareUrl}`);
+            setShareFeedback("Summary copied to clipboard!");
+            setTimeout(() => setShareFeedback(null), 3000);
+          } catch (clipErr) {
+            console.warn("Clipboard fallback error:", clipErr);
+          }
+        }
+      }
+    } else {
+      // Fallback for browsers / environments without native Web Share API
+      try {
+        await navigator.clipboard.writeText(`${shareTitle}\n\n${shareText}\n\n${shareUrl}`);
+        setShareFeedback("Summary copied to clipboard!");
+        setTimeout(() => setShareFeedback(null), 3000);
+      } catch (clipErr) {
+        console.warn("Clipboard fallback error:", clipErr);
+      }
+    }
+  };
+
+  const handleJoinInviteRoom = async (roomCode: string) => {
+    try {
+      const cached = getLocalUserProfile();
+      const playerName = activeUser?.displayName || cached?.displayName || "Player";
+      const room = await joinRoom(roomCode, playerName);
+      const inkColors = ["text-blue-700", "text-purple-700", "text-emerald-700", "text-amber-700", "text-rose-700", "text-cyan-700"];
+      const players: Player[] = room.players.map((p, idx) => ({
+        id: p.id,
+        name: p.name,
+        isBot: false,
+        inkColor: inkColors[idx % inkColors.length],
+        avatar: p.avatar
+      }));
+      handleStartOnlineGame(players, room.code, room);
+    } catch (err: any) {
+      console.warn("Failed to join room from invite:", err);
+    }
+  };
+
   return (
     <div id="app-root" className="min-h-screen google-mesh-bg text-slate-900 dark:text-slate-100 pb-12 font-sans selection:bg-blue-500/20 selection:text-blue-700">
       {/* Global Master Toolbar (Sticky Top) */}
@@ -560,6 +701,29 @@ export default function App() {
         currentLetter={activeLetter}
         hasGameData={gameState.rounds.length > 0}
         onDownloadSummary={handleDownloadSummary}
+        onStartOnlineGame={handleStartOnlineGame}
+        activeOnlineRoomCode={activeOnlineRoomCode}
+        friendships={friendships}
+        onOpenFriends={() => setIsFriendsModalOpen(true)}
+        incomingNotificationCount={incomingFriendRequests.length + incomingInvites.length}
+      />
+
+      {/* Floating Interactive Toast for Incoming Game Invites & Friend Requests */}
+      <FriendNotificationsToast
+        incomingInvites={incomingInvites}
+        incomingRequests={incomingFriendRequests}
+        onOpenFriendsModal={() => setIsFriendsModalOpen(true)}
+        onJoinRoom={handleJoinInviteRoom}
+      />
+
+      {/* Friends System Modal */}
+      <FriendsModal
+        isOpen={isFriendsModalOpen}
+        onClose={() => setIsFriendsModalOpen(false)}
+        currentUid={currentUid}
+        currentUserName={activeUser?.displayName || getLocalUserProfile()?.displayName || "Player"}
+        currentUserAvatar={getLocalUserProfile()?.selectedAvatar || "🎓"}
+        friendships={friendships}
         onStartOnlineGame={handleStartOnlineGame}
         activeOnlineRoomCode={activeOnlineRoomCode}
       />
@@ -662,6 +826,8 @@ export default function App() {
             onNextRound={handleNextRound}
             isOnlineMultiplayer={isOnlineMultiplayer}
             isHost={isHost}
+            roomCode={activeOnlineRoomCode || undefined}
+            roundIndex={gameState.currentRoundIndex}
           />
         )}
 
@@ -830,6 +996,15 @@ export default function App() {
                   )}
                   <button
                     type="button"
+                    id="share-performance-btn"
+                    onClick={handleSharePerformance}
+                    className="w-full sm:w-auto px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-display font-bold text-sm rounded-full transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
+                  >
+                    <Share2 size={15} />
+                    <span>Share Performance</span>
+                  </button>
+                  <button
+                    type="button"
                     id="download-summary-btn"
                     onClick={handleDownloadSummary}
                     className="w-full sm:w-auto px-6 py-3.5 bg-amber-500 hover:bg-amber-600 text-white font-display font-bold text-sm rounded-full transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
@@ -837,6 +1012,16 @@ export default function App() {
                     <Download size={15} /> Download Summary (.txt)
                   </button>
                 </div>
+
+                {/* Share Feedback Toast */}
+                {shareFeedback && (
+                  <div className="mt-4 flex justify-center animate-fadeIn">
+                    <div className="px-4 py-2 bg-emerald-500 text-white font-medium text-xs rounded-full shadow-lg flex items-center gap-2">
+                      <Check size={14} />
+                      <span>{shareFeedback}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </NotebookPaper>
           </div>

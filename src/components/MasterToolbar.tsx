@@ -6,9 +6,12 @@ import RatingDashboardModal from "./RatingDashboardModal";
 import DuolingoLearnModal from "./DuolingoLearnModal";
 import UserProfileModal from "./UserProfileModal";
 import WordLookupModal from "./WordLookupModal";
+import FriendsModal from "./FriendsModal";
 import { isSoundMuted, toggleSoundMute } from "../utils/soundEffects";
 import { getUserRatingLocal, getRankBadgeColor, UserRatingProfile } from "../utils/ratingSystem";
 import { getDuolingoProfile, DuolingoProfile } from "../utils/duolingoSystem";
+import { getLocalUserProfile } from "../utils/userProfileService";
+import { Friendship } from "../utils/friendService";
 import { auth, googleProvider, onAuthStateChanged } from "../firebase";
 import { User, signInWithPopup } from "firebase/auth";
 import {
@@ -25,7 +28,8 @@ import {
   Zap,
   User as UserIcon,
   Play,
-  BookOpen
+  BookOpen,
+  Users
 } from "lucide-react";
 import { Player } from "../types";
 
@@ -35,6 +39,9 @@ interface MasterToolbarProps {
   onDownloadSummary?: () => void;
   onStartOnlineGame?: (players: Player[], roomCode: string) => void;
   activeOnlineRoomCode?: string | null;
+  friendships?: Friendship[];
+  onOpenFriends?: () => void;
+  incomingNotificationCount?: number;
 }
 
 export default function MasterToolbar({
@@ -42,7 +49,10 @@ export default function MasterToolbar({
   hasGameData,
   onDownloadSummary,
   onStartOnlineGame,
-  activeOnlineRoomCode
+  activeOnlineRoomCode,
+  friendships = [],
+  onOpenFriends,
+  incomingNotificationCount = 0
 }: MasterToolbarProps) {
   const [isOnlineModalOpen, setIsOnlineModalOpen] = useState(false);
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
@@ -51,6 +61,7 @@ export default function MasterToolbar({
   const [isDuolingoModalOpen, setIsDuolingoModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isWordLookupOpen, setIsWordLookupOpen] = useState(false);
+  const [isFriendsOpen, setIsFriendsOpen] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(auth.currentUser);
   const [userRating, setUserRating] = useState<UserRatingProfile>(getUserRatingLocal());
   const [duoProfile, setDuoProfile] = useState<DuolingoProfile>(getDuolingoProfile());
@@ -173,6 +184,23 @@ export default function MasterToolbar({
           >
             <Shield size={13} className="text-emerald-500" />
             <span>{userRating.title} {userRating.rating}</span>
+          </button>
+
+          {/* Friends System Modal Button with Live Badge */}
+          <button
+            type="button"
+            id="friends-toolbar-btn"
+            onClick={() => (onOpenFriends ? onOpenFriends() : setIsFriendsOpen(true))}
+            title="Classroom Friends, Requests & Match Invites"
+            className="relative px-3 py-1.5 bg-indigo-50 dark:bg-indigo-500/15 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 rounded-full transition-all flex items-center gap-1.5 text-xs cursor-pointer font-bold shadow-sm"
+          >
+            <Users size={13} className="text-indigo-500" />
+            <span>Friends</span>
+            {incomingNotificationCount > 0 && (
+              <span className="px-1.5 py-0.2 bg-rose-500 text-white rounded-full text-[10px] font-bold animate-pulse">
+                {incomingNotificationCount}
+              </span>
+            )}
           </button>
 
           {/* AI Word Lookup Referee Button */}
@@ -323,6 +351,18 @@ export default function MasterToolbar({
         isOpen={isDuolingoModalOpen}
         onClose={() => setIsDuolingoModalOpen(false)}
         currentLetter={currentLetter}
+      />
+
+      {/* Friends System Modal */}
+      <FriendsModal
+        isOpen={isFriendsOpen}
+        onClose={() => setIsFriendsOpen(false)}
+        currentUid={authUser?.uid || "guest"}
+        currentUserName={authUser?.displayName || getLocalUserProfile()?.displayName || "Player"}
+        currentUserAvatar={getLocalUserProfile()?.selectedAvatar || "🎓"}
+        friendships={friendships}
+        onStartOnlineGame={onStartOnlineGame}
+        activeOnlineRoomCode={activeOnlineRoomCode}
       />
 
       {/* Gemini Word Lookup Modal */}

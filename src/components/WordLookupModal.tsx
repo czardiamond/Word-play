@@ -17,7 +17,7 @@ import {
 import { speakWord } from "../utils/duolingoSystem";
 
 interface WordLookupResult {
-  source?: "gemini" | "fallback";
+  source?: "gemini" | "fallback" | "mcp-dictionary";
   word: string;
   targetLetter: string;
   category: string;
@@ -30,7 +30,8 @@ interface WordLookupResult {
   origin?: string;
   funFact: string;
   gameTacticalValue: string;
-  strategicScore: number;
+  maxPossibleScore?: number;
+  strategicScore?: number;
   tacticalTip?: string;
   recommendedAlternatives: string[];
 }
@@ -311,7 +312,7 @@ export default function WordLookupModal({
                   </div>
 
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">
-                    {result.gameTacticalValue || `+${result.strategicScore} pts`}
+                    {result.gameTacticalValue || `+${result.maxPossibleScore ?? result.strategicScore ?? 0} max pts`}
                   </span>
                 </div>
               </div>

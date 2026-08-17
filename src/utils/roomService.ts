@@ -64,6 +64,14 @@ export interface RoomData {
       [playerId: string]: Answers;
     };
   };
+  roundScores?: {
+    [roundIndex: string]: {
+      [playerId: string]: {
+        scores: Record<string, number>;
+        totalRoundScore: number;
+      };
+    };
+  };
 }
 
 export interface OnlineSubmission {
@@ -431,6 +439,19 @@ export async function submitRoundAnswers(
   });
 }
 
+export async function submitRoundScores(
+  code: string,
+  roundIndex: number,
+  scoresByPlayer: Record<string, { scores: Record<string, number>; totalRoundScore: number }>
+): Promise<void> {
+  const formattedCode = (code || "").trim().toUpperCase();
+  const roomRef = doc(db, "online_rooms", formattedCode);
+  const roundKey = String(roundIndex);
+  await updateDoc(roomRef, {
+    [`roundScores.${roundKey}`]: scoresByPlayer
+  });
+}
+
 // Called by host or watchdog to advance to grading
 export async function advanceToGrading(code: string): Promise<void> {
   const formattedCode = (code || "").trim().toUpperCase();
@@ -517,3 +538,13 @@ export async function leaveRoom(code: string, uid: string): Promise<void> {
     console.warn("Leave room error:", err);
   }
 }
+
+export async function getRoomState(code: string): Promise<RoomData | null> {
+  const formattedCode = (code || "").trim().toUpperCase();
+  if (!formattedCode) return null;
+  const roomRef = doc(db, "online_rooms", formattedCode);
+  const snap = await getDoc(roomRef);
+  if (!snap.exists()) return null;
+  return snap.data() as RoomData;
+}
+
