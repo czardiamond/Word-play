@@ -13,7 +13,7 @@ import { getRoomState } from "./src/utils/roomService.js";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -480,7 +480,7 @@ Return valid JSON according to the schema.`;
 
     const text = response.text || "{}";
     const parsedData = JSON.parse(text.trim());
-    return res.json(parsedData);
+    return res.json({ ...parsedData, source: "gemini" });
 
   } catch (error: any) {
     console.error("Error generating AI answers with Gemini:", error);
@@ -565,7 +565,7 @@ Return valid JSON according to the schema.`;
       };
     });
 
-    return res.json({ opponents: fallbackAnswers });
+    return res.json({ source: "local-fallback", opponents: fallbackAnswers });
   }
 });
 
@@ -1627,19 +1627,24 @@ app.get("/api/mcp/vocabulary-progress/:roomId/:playerName", async (req, res) => 
 
 // Setup development or production server
 async function startServer() {
-  // Connect to persistent MCP Dictionary server
-  try {
-    console.log("[MCP Dictionary] Initializing connection to external dictionary server...");
-    const dictTransport = new StdioClientTransport({
-      command: "npx",
-      args: ["-y", "mcp-server-dictionary"]
-    });
-    dictClient = new Client({ name: "wordplay-dict-client", version: "1.0.0" });
-    await dictClient.connect(dictTransport);
-    console.log("[MCP Dictionary] Connected successfully to external mcp-server-dictionary.");
-  } catch (mcpErr: any) {
-    console.warn("[MCP Dictionary] Could not connect to external dictionary server. Fallback to Gemini will be active:", mcpErr.message);
+  // Optional local MCP dictionary. Never invoke npx at runtime (which may download).
+  if (process.env.ENABLE_DICTIONARY_MCP === "true") {
+    try {
+      const dictionaryEntry = path.resolve("node_modules/mcp-server-dictionary/build/index.js");
+      const dictTransport = new StdioClientTransport({ command: process.execPath, args: [dictionaryEntry] });
+      dictClient = new Client({ name: "wordplay-dict-client", version: "1.0.0" });
+      await Promise.race([
+        dictClient.connect(dictTransport),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("dictionary startup timeout")), 5000))
+      ]);
+      console.log("[MCP Dictionary] Connected to locally installed dictionary dependency.");
+    } catch (mcpErr: any) {
+      console.warn("[MCP Dictionary] Optional local dictionary unavailable; continuing without it:", mcpErr.message);
+      dictClient = null;
+    }
+  } else {
     dictClient = null;
+    console.log("[MCP Dictionary] Disabled; using configured lookup fallbacks.");
   }
 
   if (process.env.NODE_ENV !== "production") {
