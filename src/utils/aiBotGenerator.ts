@@ -258,12 +258,16 @@ export function getBotPersonalityTaunt(
   }
 }
 
+export function resolveBotSource(source: unknown): "gemini" | "local-fallback" {
+  return source === "gemini" ? "gemini" : "local-fallback";
+}
 export interface DynamicBotResponse {
   id: string;
   answers: Answers;
   taunt: string;
   estimatedScore: number;
   speedSeconds: number;
+  source: "gemini" | "local-fallback";
 }
 
 /**
@@ -286,7 +290,8 @@ export async function fetchDynamicBotMoves(
       answers,
       taunt: getBotPersonalityTaunt(pers, letter, difficulty),
       estimatedScore: pers === "susie" ? 75 : pers === "harry" ? 55 : pers === "sam" ? 50 : 65,
-      speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28
+      speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28,
+      source: "local-fallback"
     };
   });
 
@@ -321,7 +326,8 @@ export async function fetchDynamicBotMoves(
               answers: opp.answers,
               taunt: opp.taunt || fallbackResults[opp.id]?.taunt || "Ready for grading!",
               estimatedScore: opp.estimatedScore || fallbackResults[opp.id]?.estimatedScore || 60,
-              speedSeconds: opp.speedSeconds || fallbackResults[opp.id]?.speedSeconds || 25
+              speedSeconds: opp.speedSeconds || fallbackResults[opp.id]?.speedSeconds || 25,
+              source: resolveBotSource(data.source)
             };
           }
         });

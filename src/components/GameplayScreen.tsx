@@ -161,7 +161,8 @@ export default function GameplayScreen({
         answers,
         taunt: getBotPersonalityTaunt(pers, letter, difficulty),
         estimatedScore: pers === "susie" ? 75 : pers === "harry" ? 55 : pers === "sam" ? 50 : 65,
-        speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28
+        speedSeconds: pers === "harry" ? 14 : pers === "susie" ? 22 : pers === "sam" ? 38 : 28,
+        source: "local-fallback"
       };
     });
     return initial;
@@ -337,7 +338,7 @@ export default function GameplayScreen({
 
     const initialStatuses: Record<string, { status: string; progress: number }> = {};
     botPlayers.forEach((bot) => {
-      initialStatuses[bot.id] = { status: "Thinking with Gemini AI...", progress: 0 };
+      initialStatuses[bot.id] = { status: "Preparing answers...", progress: 0 };
     });
     setBotStatuses(initialStatuses);
 
