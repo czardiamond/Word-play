@@ -196,3 +196,13 @@
 .animate-sparkle-glow {
   animation: sparkleGlow 2.5s infinite ease-in-out;
 }
+
+/* Motion refresh: letter reveal, answer validation, and score feedback */
+@keyframes wordplay-pop { 0% { opacity: 0; transform: scale(.86) translateY(8px); } 70% { transform: scale(1.035) translateY(-2px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes wordplay-score { 0% { transform: scale(.94); } 55% { transform: scale(1.06); } 100% { transform: scale(1); } }
+[class*="animate-"], [class*="rounded-"] { transition: transform 180ms cubic-bezier(.22,1,.36,1), box-shadow 180ms ease, border-color 180ms ease; }
+[class*="rounded-"]:hover { transform: translateY(-2px); }
+.animate-sparkle-pop, .animate-sparkle-glow { animation: wordplay-pop 520ms cubic-bezier(.22,1,.36,1) both; }
+.text-amber-600 { animation: wordplay-score 360ms cubic-bezier(.22,1,.36,1) both; }
+input:focus, textarea:focus { box-shadow: 0 0 0 4px rgba(66,133,244,.14); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
